@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["Builder","Builds a thread pool with custom configuration values."],["Error","Task failed to execute to completion."],["JoinHandle","An owned permission to join on a task (await its termination)."],["Spawner","Submit futures to the associated thread pool for execution."],["ThreadPool","Work-stealing based thread pool for executing futures."]]});
