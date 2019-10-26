@@ -6,7 +6,7 @@ use std::{cmp, fmt, io, str, usize};
 
 /// A simple `Codec` implementation that splits up data into lines.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct LinesCodec {
+pub struct BytesLinesCodec {
     // Stored index of the next index to examine for a `\n` character.
     // This is used to optimize searching.
     // For example, if `decode` was called with `abc`, it would hold `3`,
@@ -24,27 +24,27 @@ pub struct LinesCodec {
     is_discarding: bool,
 }
 
-impl LinesCodec {
-    /// Returns a `LinesCodec` for splitting up data into lines.
+impl BytesLinesCodec {
+    /// Returns a `BytesLinesCodec` for splitting up data into lines.
     ///
     /// # Note
     ///
-    /// The returned `LinesCodec` will not have an upper bound on the length
+    /// The returned `BytesLinesCodec` will not have an upper bound on the length
     /// of a buffered line. See the documentation for [`new_with_max_length`]
     /// for information on why this could be a potential security risk.
     ///
     /// [`new_with_max_length`]: #method.new_with_max_length
-    pub fn new() -> LinesCodec {
-        LinesCodec {
+    pub fn new() -> Self {
+        Self {
             next_index: 0,
             max_length: usize::MAX,
             is_discarding: false,
         }
     }
 
-    /// Returns a `LinesCodec` with a maximum line length limit.
+    /// Returns a `BytesLinesCodec` with a maximum line length limit.
     ///
-    /// If this is set, calls to `LinesCodec::decode` will return a
+    /// If this is set, calls to `BytesLinesCodec::decode` will return a
     /// [`LengthError`] when a line exceeds the length limit. Subsequent calls
     /// will discard up to `limit` bytes from that line until a newline
     /// character is reached, returning `None` until the line over the limit
@@ -53,7 +53,7 @@ impl LinesCodec {
     ///
     /// # Note
     ///
-    /// Setting a length limit is highly recommended for any `LinesCodec` which
+    /// Setting a length limit is highly recommended for any `BytesLinesCodec` which
     /// will be exposed to untrusted input. Otherwise, the size of the buffer
     /// that holds the line currently being read is unbounded. An attacker could
     /// exploit this unbounded buffer by sending an unbounded amount of input
@@ -61,9 +61,9 @@ impl LinesCodec {
     ///
     /// [`LengthError`]: ../struct.LengthError
     pub fn new_with_max_length(max_length: usize) -> Self {
-        LinesCodec {
+        Self {
             max_length,
-            ..LinesCodec::new()
+            ..Self::new()
         }
     }
 
@@ -71,15 +71,15 @@ impl LinesCodec {
     ///
     /// ```
     /// use std::usize;
-    /// use tokio_util::codec::LinesCodec;
+    /// use tokio_util::codec::BytesLinesCodec;
     ///
-    /// let codec = LinesCodec::new();
+    /// let codec = BytesLinesCodec::new();
     /// assert_eq!(codec.max_length(), usize::MAX);
     /// ```
     /// ```
-    /// use tokio_util::codec::LinesCodec;
+    /// use tokio_util::codec::BytesLinesCodec;
     ///
-    /// let codec = LinesCodec::new_with_max_length(256);
+    /// let codec = BytesLinesCodec::new_with_max_length(256);
     /// assert_eq!(codec.max_length(), 256);
     /// ```
     pub fn max_length(&self) -> usize {
@@ -92,19 +92,17 @@ fn utf8(buf: &[u8]) -> Result<&str, io::Error> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Unable to decode input as UTF8"))
 }
 
-fn without_carriage_return(s: &[u8]) -> &[u8] {
+fn without_carriage_return(s: &mut BytesMut) {
     if let Some(&b'\r') = s.last() {
-        &s[..s.len() - 1]
-    } else {
-        s
+        s.truncate(s.len() - 1);
     }
 }
 
-impl Decoder for LinesCodec {
-    type Item = String;
+impl Decoder for BytesLinesCodec {
+    type Item = BytesMut;
     type Error = LinesCodecError;
 
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<String>, LinesCodecError> {
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BytesMut>, LinesCodecError> {
         loop {
             // Determine how far into the buffer we'll search for a newline. If
             // there's no max_length set, we'll read to the end of the buffer.
@@ -137,11 +135,10 @@ impl Decoder for LinesCodec {
                     // Found a line!
                     let newline_index = offset + self.next_index;
                     self.next_index = 0;
-                    let line = buf.split_to(newline_index + 1);
-                    let line = &line[..line.len() - 1];
-                    let line = without_carriage_return(line);
-                    let line = utf8(line)?;
-                    return Ok(Some(line.to_string()));
+                    let mut line = buf.split_to(newline_index + 1);
+                    line.truncate(line.len() - 1);
+                    without_carriage_return(&mut line);
+                    return Ok(Some(line));
                 }
                 (false, None) if buf.len() > self.max_length => {
                     // Reached the maximum length without finding a
@@ -160,7 +157,7 @@ impl Decoder for LinesCodec {
         }
     }
 
-    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<String>, LinesCodecError> {
+    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<BytesMut>, LinesCodecError> {
         Ok(match self.decode(buf)? {
             Some(frame) => Some(frame),
             None => {
@@ -168,18 +165,17 @@ impl Decoder for LinesCodec {
                 if buf.is_empty() || buf == &b"\r"[..] {
                     None
                 } else {
-                    let line = buf.take();
-                    let line = without_carriage_return(&line);
-                    let line = utf8(line)?;
+                    let mut line = buf.take();
+                    without_carriage_return(&mut line);
                     self.next_index = 0;
-                    Some(line.to_string())
+                    Some(line)
                 }
             }
         })
     }
 }
 
-impl Encoder for LinesCodec {
+impl Encoder for BytesLinesCodec {
     type Item = String;
     type Error = LinesCodecError;
 
@@ -188,6 +184,112 @@ impl Encoder for LinesCodec {
         buf.put(line);
         buf.put_u8(b'\n');
         Ok(())
+    }
+}
+
+impl Default for BytesLinesCodec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A simple `Codec` implementation that splits up data into lines.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct LinesCodec {
+    inner: BytesLinesCodec,
+}
+
+impl LinesCodec {
+    /// Returns a `LinesCodec` for splitting up data into lines.
+    ///
+    /// # Note
+    ///
+    /// The returned `LinesCodec` will not have an upper bound on the length
+    /// of a buffered line. See the documentation for [`new_with_max_length`]
+    /// for information on why this could be a potential security risk.
+    ///
+    /// [`new_with_max_length`]: #method.new_with_max_length
+    pub fn new() -> Self {
+        Self {
+            inner: BytesLinesCodec::new(),
+        }
+    }
+
+    /// Returns a `LinesCodec` with a maximum line length limit.
+    ///
+    /// If this is set, calls to `LinesCodec::decode` will return a
+    /// [`LengthError`] when a line exceeds the length limit. Subsequent calls
+    /// will discard up to `limit` bytes from that line until a newline
+    /// character is reached, returning `None` until the line over the limit
+    /// has been fully discarded. After that point, calls to `decode` will
+    /// function as normal.
+    ///
+    /// # Note
+    ///
+    /// Setting a length limit is highly recommended for any `LinesCodec` which
+    /// will be exposed to untrusted input. Otherwise, the size of the buffer
+    /// that holds the line currently being read is unbounded. An attacker could
+    /// exploit this unbounded buffer by sending an unbounded amount of input
+    /// without any `\n` characters, causing unbounded memory consumption.
+    ///
+    /// [`LengthError`]: ../struct.LengthError
+    pub fn new_with_max_length(max_length: usize) -> Self {
+        Self {
+            inner: BytesLinesCodec::new_with_max_length(max_length),
+        }
+    }
+
+    /// Returns the maximum line length when decoding.
+    ///
+    /// ```
+    /// use std::usize;
+    /// use tokio_util::codec::LinesCodec;
+    ///
+    /// let codec = LinesCodec::new();
+    /// assert_eq!(codec.max_length(), usize::MAX);
+    /// ```
+    /// ```
+    /// use tokio_util::codec::LinesCodec;
+    ///
+    /// let codec = LinesCodec::new_with_max_length(256);
+    /// assert_eq!(codec.max_length(), 256);
+    /// ```
+    pub fn max_length(&self) -> usize {
+        self.inner.max_length()
+    }
+}
+
+impl Decoder for LinesCodec {
+    type Item = String;
+    type Error = LinesCodecError;
+
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<String>, LinesCodecError> {
+        let bytes = self.inner.decode(buf)?;
+        if let Some(line) = bytes {
+            let line = utf8(&line)?;
+            Ok(Some(line.to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<String>, LinesCodecError> {
+        let bytes = self.inner.decode_eof(buf)?;
+        if let Some(line) = bytes {
+            let line = utf8(&line)?;
+            Ok(Some(line.to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl Encoder for LinesCodec {
+    type Item = String;
+    type Error = LinesCodecError;
+
+    fn encode(&mut self, line: String, buf: &mut BytesMut) -> Result<(), LinesCodecError> {
+        self.inner.encode(line, buf)
     }
 }
 

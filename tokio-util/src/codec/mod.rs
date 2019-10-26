@@ -34,4 +34,4 @@ pub mod length_delimited;
 pub use self::length_delimited::{LengthDelimitedCodec, LengthDelimitedCodecError};
 
 mod lines_codec;
-pub use self::lines_codec::{LinesCodec, LinesCodecError};
+pub use self::lines_codec::{BytesLinesCodec, LinesCodec, LinesCodecError};
